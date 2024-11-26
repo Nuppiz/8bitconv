@@ -1,3 +1,4 @@
+*.DSK
 *.obj
 .vscode/
 *.7UP
