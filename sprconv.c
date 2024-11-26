@@ -193,9 +193,47 @@ void save_file(char* outname)
 	fclose(file_ptr);
 }
 
+void save_file_RLE(char* outname)
+{
+	int16_t y, x;
+	uint8_t current_index = 0; // current palette index being read
+	uint8_t next_index = 0; // next palette index being read
+	uint8_t compare_index = 0; // current palette index being compared
+	uint8_t index_count = 0; // current count of the same palette index
+	FILE* file_ptr = fopen(outname, "wb+");
+    fwrite(&width, 2, 1, file_ptr);
+    fseek(file_ptr, 2, SEEK_SET);
+    fwrite(&height, 2, 1, file_ptr);
+    fseek(file_ptr, 4, SEEK_SET);
+    fwrite(&num_frames, 2, 1, file_ptr);
+    fseek(file_ptr, 6, SEEK_SET);
+    fwrite(&flags, 2, 1, file_ptr);
+    fseek(file_ptr, 8, SEEK_SET);
+	
+	for (y = height-1; y >= 0; y--)
+	{
+		for (x = 0; x < width; x++)
+		{
+			current_index = buffer[(y * width) + x];
+			compare_index = current_index;
+			index_count++;
+			while (compare_index == (next_index = buffer[(y * width) + (x + 1)]) && x < width - 1 && index_count < 256)
+			{
+				index_count++;
+				x++;
+			}
+			fwrite(&index_count, 1, 1, file_ptr);
+			fwrite(&current_index, 1, 1, file_ptr);
+			index_count = 0;
+		}
+	}
+	fclose(file_ptr);
+}
+
 void convert_single()
 {
 	char response;
+	char RLE_response;
 
 	// take in the file input name
 	printf("Enter file to convert (without file extension):\n");
@@ -219,7 +257,12 @@ void convert_single()
 	printf("Writing file: %s\n", outname);
 
 	// save file to 7UP format
-	save_file(outname);
+	printf("Y to convert normally, or R to use RLE.\n");
+	scanf(" %c", &RLE_response);
+	if (RLE_response == 'y' || RLE_response == 'Y')
+		save_file(outname);
+	else if (RLE_response == 'r' || RLE_response == 'R')
+		save_file_RLE(outname);
 
 	printf("BMP successfully converted into %s!\n", outname);
 
@@ -247,7 +290,6 @@ void convert_list()
     int transparency;
 	int animation_frames;
     char filename[13] = {'\0'};
-	char c;
 
 	fflush(stdin);
 
