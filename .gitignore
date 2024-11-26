@@ -1,0 +1,10 @@
+*.obj
+.vscode/
+*.7UP
+*.bmp
+*.err
+*.lk1
+*.map
+*.mk
+*.mk1
+*.sym
