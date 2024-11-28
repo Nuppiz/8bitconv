@@ -2,7 +2,6 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
-
 #include "Def_bit.h"
 
 char inputlist[13];
