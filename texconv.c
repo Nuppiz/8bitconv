@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "Def_bit.h"
+
 char inputlist[13];
 char inputname[13];
 char outputname[13];
@@ -22,6 +24,7 @@ struct BMP_file {
     char* filename;
     uint8_t transparency;
 	uint8_t animation_frames;
+	uint8_t RLE;
 };
 
 struct BMP_file* BMP_files;
@@ -53,7 +56,7 @@ void load_file(char* inname, uint8_t batch_convert, uint8_t batch_transparency, 
     
     uint16_t frame_height;
     int remainder;
-    char flag_resp;
+    char transparency_resp;
     char frame_resp;
 
 	printf("Loading file %s...\n", inname);
@@ -94,11 +97,9 @@ void load_file(char* inname, uint8_t batch_convert, uint8_t batch_transparency, 
     if (batch_convert == FALSE)
 	{
 		printf("Does the file contain transparency Y/N?\n");
-		scanf(" %c", &flag_resp);
-			if (flag_resp == 'y' || flag_resp == 'Y')
-				flags = 1;
-			else if (flag_resp == 'n' || flag_resp == 'N')
-				flags = 0;
+		scanf(" %c", &transparency_resp);
+		if (transparency_resp == 'y' || transparency_resp == 'Y')
+			flags |= (FLAGS_TRANSPARENCY);
 		
 		printf("How many animation frames does the file contain?\n");
 		printf("Write '1' if it's a static sprite.\n");
@@ -107,7 +108,8 @@ void load_file(char* inname, uint8_t batch_convert, uint8_t batch_transparency, 
 
 	else
 	{
-		flags = batch_transparency;
+		if (batch_transparency == TRUE)
+			flags |= (FLAGS_TRANSPARENCY);
 		num_frames = batch_animframes;
 	}
     
@@ -177,9 +179,89 @@ void save_file(char* outname, uint8_t* source_data, uint16_t data_size)
 	fclose(file_ptr);
 }
 
+void save_file_RLE(char* outname)
+{
+	uint16_t i = 0;
+	uint8_t current_index = 0; // current palette index being read
+	uint8_t compare_index = 0; // current palette index being compared
+	uint16_t index_count = 0; // current count of the same palette index
+	uint16_t index_count_highest = 0; // highest amount of the same palette index;
+	uint16_t index_count_max = UINT16_MAX; // maximum count of the same palette index
+	uint8_t index_count_bytes; // amount of bytes to write as index count
+	
+	FILE* file_ptr;
+
+	/* first check if we need single- or double-byte RLE by going through the pixel data and 
+	checking what's the highest amount of repetitions in a row */
+	while (i < filesize)
+	{
+		current_index = buffer[i];
+		compare_index = current_index;
+		index_count++;
+
+		while (compare_index == buffer[i + 1] && index_count < index_count_max)
+		{
+			index_count++;
+			i++;
+		}
+		if (index_count > index_count_highest)
+			index_count_highest = index_count;
+		index_count = 0;
+		i++;
+	}
+
+	// set relevant flag if we need two bytes per repetition index
+	if (index_count_highest > 255)
+		flags |= (FLAGS_LARGE_RLE);
+
+	// reset indexes
+	i = 0;
+	index_count = 0;
+
+	// open file for writing
+	file_ptr = fopen(outname, "wb+");
+	fwrite(&width, 2, 1, file_ptr);
+    fseek(file_ptr, 2, SEEK_SET);
+    fwrite(&height, 2, 1, file_ptr);
+    fseek(file_ptr, 4, SEEK_SET);
+    fwrite(&num_frames, 2, 1, file_ptr);
+    fseek(file_ptr, 6, SEEK_SET);
+    fwrite(&flags, 2, 1, file_ptr);
+    fseek(file_ptr, 8, SEEK_SET);
+	
+	// go through buffer again, now writing the pixel data to file
+	while (i < filesize)
+	{
+		current_index = buffer[i];
+		compare_index = current_index;
+		index_count++;
+		if ((flags & FLAGS_LARGE_RLE))
+		{
+			index_count_max = UINT16_MAX;
+			index_count_bytes = 2;
+		}
+		else
+		{
+			index_count_max = 256;
+			index_count_bytes = 1;
+		}
+		while (compare_index == buffer[i + 1] && index_count < index_count_max)
+		{
+			index_count++;
+			i++;
+		}
+		fwrite(&index_count, index_count_bytes, 1, file_ptr);
+		fwrite(&current_index, 1, 1, file_ptr);
+		index_count = 0;
+		i++;
+	}
+	fclose(file_ptr);
+}
+
 void convert_single()
 {
 	char response;
+	char RLE_response;
 
 	// take in the file input name
 	printf("Enter file to convert (without file extension):\n");
@@ -200,10 +282,17 @@ void convert_single()
 	else
 		sprintf(outname, "%s.7UP", outputname);
 	
-	printf("Writing file: %s\n", outname);
-
 	// save file to 7UP format
-	save_file(outname, buffer, filesize);
+	printf("N to convert normally, or R to use RLE.\n");
+	scanf(" %c", &RLE_response);
+	if (RLE_response == 'n' || RLE_response == 'N')
+		save_file(outname, buffer, filesize);
+	else if (RLE_response == 'r' || RLE_response == 'R')
+	{
+		save_file_RLE(outname);
+	}
+
+	printf("Writing file: %s\n", outname);
 
 	printf("BMP successfully converted into %s!\n", outname);
 
@@ -226,12 +315,10 @@ void convert_single()
 void convert_list()
 {
 	FILE* BMP_list_file;
-	int num_files = 1;
+	int num_files = 1; // for whatever reason the Win32 version crashes if this is 0 even though all of the code is the same as DOS
     int i = 0;
-    int transparency;
-	int animation_frames;
+    int transparency, animation_frames, RLE;
     char filename[13] = {'\0'};
-	char c;
 
 	fflush(stdin);
 
@@ -254,11 +341,12 @@ void convert_list()
 
 	do
 	{
-		fscanf(BMP_list_file, "%s %d %d", filename, &transparency, &animation_frames);
+		fscanf(BMP_list_file, "%s %d %d %d", filename, &transparency, &animation_frames, &RLE);
 		BMP_files[i].filename = malloc(strlen(filename) + 1);
 		strcpy(BMP_files[i].filename, filename);
 		BMP_files[i].transparency = transparency;
 		BMP_files[i].animation_frames = animation_frames;
+		BMP_files[i].RLE = RLE;
 		i++;
 		num_files++;
 		BMP_files = realloc(BMP_files, num_files * sizeof(struct BMP_file));
@@ -275,10 +363,19 @@ void convert_list()
 		strcat(conversion_name, ".7UP"); // add sprite file extension
 		load_file(BMP_files[i].filename, TRUE, BMP_files[i].transparency, BMP_files[i].animation_frames);
 		printf("Saving file as: %s\n", conversion_name);
-		save_file(conversion_name, buffer, filesize);
+		if (BMP_files[i].RLE == TRUE)
+		{
+			printf("RLE compression enabled.\n");
+			save_file_RLE(conversion_name);
+		}
+		else
+		{
+			save_file(conversion_name, buffer, filesize);
+		}
 
 		// clear memory
 		free(buffer);
+		printf("File %d of %d successfully converted.\n\n", i + 1, num_files - 1);
 	}
 	printf("List conversion complete!\n");
 	menu();

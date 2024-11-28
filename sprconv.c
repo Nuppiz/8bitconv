@@ -3,12 +3,15 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "Def_bit.h"
+
 char inputlist[13];
 char inputname[13];
 char outputname[13];
 char inname[13];
 char outname[13];
 uint8_t* far buffer;
+uint8_t* far buffer2;
 uint16_t filesize = 0;
 uint16_t width;
 uint16_t height;
@@ -22,6 +25,7 @@ struct BMP_file {
     char* filename;
     uint8_t transparency;
 	uint8_t animation_frames;
+	uint8_t RLE;
 };
 
 struct BMP_file* BMP_files;
@@ -72,7 +76,7 @@ void load_file(char* inname, uint8_t batch_convert, uint8_t batch_transparency, 
 	FILE* file_ptr;
     uint16_t frame_height;
     int remainder;
-    char flag_resp;
+    char transparency_resp;
     char frame_resp;
 
 	printf("Loading file %s...\n", inname);
@@ -113,11 +117,9 @@ void load_file(char* inname, uint8_t batch_convert, uint8_t batch_transparency, 
     if (batch_convert == FALSE)
 	{
 		printf("Does the file contain transparency Y/N?\n");
-		scanf(" %c", &flag_resp);
-			if (flag_resp == 'y' || flag_resp == 'Y')
-				flags = 1;
-			else if (flag_resp == 'n' || flag_resp == 'N')
-				flags = 0;
+		scanf(" %c", &transparency_resp);
+		if (transparency_resp == 'y' || transparency_resp == 'Y')
+			flags |= (FLAGS_TRANSPARENCY);
 		
 		printf("How many animation frames does the file contain?\n");
 		printf("Write '1' if it's a static sprite.\n");
@@ -126,7 +128,8 @@ void load_file(char* inname, uint8_t batch_convert, uint8_t batch_transparency, 
 
 	else
 	{
-		flags = batch_transparency;
+		if (batch_transparency == TRUE)
+			flags |= (FLAGS_TRANSPARENCY);
 		num_frames = batch_animframes;
 	}
     
@@ -154,20 +157,18 @@ void load_file(char* inname, uint8_t batch_convert, uint8_t batch_transparency, 
 	printf("Total file size: %u bytes\n", filesize);
 	printf("\n");
 	
-    printf("Allocating memory...");
+    printf("Allocating memory...\n");
 	buffer = (uint8_t far*)malloc(filesize);
-	printf("\n");
 	
 	printf("Starting to read first line...\n");
 	
 	fseek(file_ptr, 1078, SEEK_SET);
 	fread(buffer, 1, filesize, file_ptr);
-	fclose(file_ptr);
-	
+
 	printf("\n%u bytes read!\n", filesize);
 	printf("\nFile read successfully!\n");
-	fclose(file_ptr);
 	printf("\n");
+	fclose(file_ptr);
 }
 
 void save_file(char* outname)
@@ -182,7 +183,7 @@ void save_file(char* outname)
     fseek(file_ptr, 6, SEEK_SET);
     fwrite(&flags, 2, 1, file_ptr);
     fseek(file_ptr, 8, SEEK_SET);
-	
+
 	for (y = height-1; y >= 0; y--)
 	{
 		for (x = 0; x < width; x++)
@@ -193,15 +194,65 @@ void save_file(char* outname)
 	fclose(file_ptr);
 }
 
+void rearrange_bitmap_data()
+{
+	int16_t y;
+	int16_t inverse_y = 0;
+
+	buffer2 = (uint8_t far*)malloc(filesize);
+
+	/* bitmap pixel data has the first row at the end of the file, so we need to invert it
+	with this hack to ensure RLE saving works as intended */
+
+	for (y = height - 1; y >= 0; y--)
+	{
+		_fmemcpy(&buffer2[(inverse_y * width)], &buffer[(y * width)], width);
+		inverse_y++;
+	}
+}
+
 void save_file_RLE(char* outname)
 {
-	int16_t y, x;
+	uint16_t i = 0;
 	uint8_t current_index = 0; // current palette index being read
-	uint8_t next_index = 0; // next palette index being read
 	uint8_t compare_index = 0; // current palette index being compared
-	uint8_t index_count = 0; // current count of the same palette index
-	FILE* file_ptr = fopen(outname, "wb+");
-    fwrite(&width, 2, 1, file_ptr);
+	uint16_t index_count = 0; // current count of the same palette index
+	uint16_t index_count_highest = 0; // highest amount of the same palette index;
+	uint16_t index_count_max = UINT16_MAX; // maximum count of the same palette index
+	uint8_t index_count_bytes; // amount of bytes to write as index count
+	
+	FILE* file_ptr;
+
+	/* first check if we need single- or double-byte RLE by going through the pixel data and 
+	checking what's the highest amount of repetitions in a row */
+	while (i < filesize)
+	{
+		current_index = buffer2[i];
+		compare_index = current_index;
+		index_count++;
+
+		while (compare_index == buffer2[i + 1] && index_count < index_count_max)
+		{
+			index_count++;
+			i++;
+		}
+		if (index_count > index_count_highest)
+			index_count_highest = index_count;
+		index_count = 0;
+		i++;
+	}
+
+	// set relevant flag if we need two bytes per repetition index
+	if (index_count_highest > 255)
+		flags |= (FLAGS_LARGE_RLE);
+
+	// reset indexes
+	i = 0;
+	index_count = 0;
+
+	// open file for writing
+	file_ptr = fopen(outname, "wb+");
+	fwrite(&width, 2, 1, file_ptr);
     fseek(file_ptr, 2, SEEK_SET);
     fwrite(&height, 2, 1, file_ptr);
     fseek(file_ptr, 4, SEEK_SET);
@@ -210,22 +261,31 @@ void save_file_RLE(char* outname)
     fwrite(&flags, 2, 1, file_ptr);
     fseek(file_ptr, 8, SEEK_SET);
 	
-	for (y = height-1; y >= 0; y--)
+	// go through buffer again, now writing the pixel data to file
+	while (i < filesize)
 	{
-		for (x = 0; x < width; x++)
+		current_index = buffer2[i];
+		compare_index = current_index;
+		index_count++;
+		if ((flags & FLAGS_LARGE_RLE))
 		{
-			current_index = buffer[(y * width) + x];
-			compare_index = current_index;
-			index_count++;
-			while (compare_index == (next_index = buffer[(y * width) + (x + 1)]) && x < width - 1 && index_count < 256)
-			{
-				index_count++;
-				x++;
-			}
-			fwrite(&index_count, 1, 1, file_ptr);
-			fwrite(&current_index, 1, 1, file_ptr);
-			index_count = 0;
+			index_count_max = UINT16_MAX;
+			index_count_bytes = 2;
 		}
+		else
+		{
+			index_count_max = 256;
+			index_count_bytes = 1;
+		}
+		while (compare_index == buffer2[i + 1] && index_count < index_count_max)
+		{
+			index_count++;
+			i++;
+		}
+		fwrite(&index_count, index_count_bytes, 1, file_ptr);
+		fwrite(&current_index, 1, 1, file_ptr);
+		index_count = 0;
+		i++;
 	}
 	fclose(file_ptr);
 }
@@ -253,16 +313,19 @@ void convert_single()
 	
 	else
 		sprintf(outname, "%s.7UP", outputname);
-	
-	printf("Writing file: %s\n", outname);
 
 	// save file to 7UP format
-	printf("Y to convert normally, or R to use RLE.\n");
+	printf("N to convert normally, or R to use RLE.\n");
 	scanf(" %c", &RLE_response);
-	if (RLE_response == 'y' || RLE_response == 'Y')
+	if (RLE_response == 'n' || RLE_response == 'N')
 		save_file(outname);
 	else if (RLE_response == 'r' || RLE_response == 'R')
+	{
+		rearrange_bitmap_data();
 		save_file_RLE(outname);
+	}
+
+	printf("Writing file: %s\n", outname);
 
 	printf("BMP successfully converted into %s!\n", outname);
 
@@ -272,6 +335,7 @@ void convert_single()
 	inname [0] = '\0';
 	outname [0] = '\0';
 	farfree(buffer);
+	farfree(buffer2);
     
 	// ask if user wants to convert another file, or quit
 	printf("Y to convert another file, or N to quit.\n");
@@ -285,10 +349,9 @@ void convert_single()
 void convert_list()
 {
 	FILE* BMP_list_file;
-	int num_files = 1;
+	int num_files = 0;
     int i = 0;
-    int transparency;
-	int animation_frames;
+    int transparency, animation_frames, RLE;
     char filename[13] = {'\0'};
 
 	fflush(stdin);
@@ -312,11 +375,12 @@ void convert_list()
 
 	do
 	{
-		fscanf(BMP_list_file, "%s %d %d", filename, &transparency, &animation_frames);
+		fscanf(BMP_list_file, "%s %d %d %d", filename, &transparency, &animation_frames, &RLE);
 		BMP_files[i].filename = malloc(strlen(filename) + 1);
 		strcpy(BMP_files[i].filename, filename);
 		BMP_files[i].transparency = transparency;
 		BMP_files[i].animation_frames = animation_frames;
+		BMP_files[i].RLE = RLE;
 		i++;
 		num_files++;
 		BMP_files = realloc(BMP_files, num_files * sizeof(struct BMP_file));
@@ -325,7 +389,7 @@ void convert_list()
     fclose(BMP_list_file);
 
 	// start converting
-	for (i = 0; i < num_files - 1; i++)
+	for (i = 0; i < num_files; i++)
 	{
 		char conversion_name[15] = {'\0'};
 		// construct file extension
@@ -333,10 +397,20 @@ void convert_list()
 		strcat(conversion_name, ".7UP"); // add sprite file extension
 		load_file(BMP_files[i].filename, TRUE, BMP_files[i].transparency, BMP_files[i].animation_frames);
 		printf("Saving file as: %s\n", conversion_name);
-		save_file(conversion_name);
+		if (BMP_files[i].RLE == TRUE)
+		{
+			rearrange_bitmap_data();
+			printf("RLE compression enabled.\n");
+			save_file_RLE(conversion_name);
+		}
+		else
+		{
+			save_file(conversion_name);
+		}
 
 		// clear memory
 		farfree(buffer);
+		printf("File %d of %d successfully converted.\n\n", i + 1, num_files);
 	}
 	printf("List conversion complete!\n");
 	menu();
