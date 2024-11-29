@@ -25,6 +25,7 @@ struct BMP_file {
     uint8_t transparency;
 	uint8_t animation_frames;
 	uint8_t RLE;
+	uint8_t RLE_rows;
 };
 
 struct BMP_file* BMP_files;
@@ -179,7 +180,7 @@ void save_file(char* outname, uint8_t* source_data, uint16_t data_size)
 	fclose(file_ptr);
 }
 
-void save_file_RLE(char* outname)
+void save_file_RLE(char* outname, uint8_t RLE_rows)
 {
 	uint16_t i = 0;
 	uint8_t current_index = 0; // current palette index being read
@@ -191,6 +192,10 @@ void save_file_RLE(char* outname)
 	
 	FILE* file_ptr;
 
+	/* if we want to retain row data (original image width), set "rowed" bit" */
+	if (RLE_rows == TRUE)
+		flags |= (FLAGS_ROWED_RLE);
+
 	/* first check if we need single- or double-byte RLE by going through the pixel data and 
 	checking what's the highest amount of repetitions in a row */
 	while (i < filesize)
@@ -199,8 +204,10 @@ void save_file_RLE(char* outname)
 		compare_index = current_index;
 		index_count++;
 
-		while (compare_index == buffer[i + 1] && index_count < index_count_max)
+		while (compare_index == buffer[i + 1] && index_count <= index_count_max)
 		{
+			if (compare_index != buffer[i + 1])
+				break;
 			index_count++;
 			i++;
 		}
@@ -218,6 +225,18 @@ void save_file_RLE(char* outname)
 	i = 0;
 	index_count = 0;
 
+	// set index limits
+	if ((flags & FLAGS_LARGE_RLE))
+	{
+		index_count_max = UINT16_MAX;
+		index_count_bytes = 2;
+	}
+	else
+	{
+		index_count_max = 255;
+		index_count_bytes = 1;
+	}
+
 	// open file for writing
 	file_ptr = fopen(outname, "wb+");
 	fwrite(&width, 2, 1, file_ptr);
@@ -230,30 +249,50 @@ void save_file_RLE(char* outname)
     fseek(file_ptr, 8, SEEK_SET);
 	
 	// go through buffer again, now writing the pixel data to file
-	while (i < filesize)
+
+	if (RLE_rows == TRUE)
 	{
-		current_index = buffer[i];
-		compare_index = current_index;
-		index_count++;
-		if ((flags & FLAGS_LARGE_RLE))
+		int x, y;
+		for (y = 0; y < height; y++)
 		{
-			index_count_max = UINT16_MAX;
-			index_count_bytes = 2;
+			for (x = 0; x < width; x++)
+			{
+				current_index = buffer[(y * width) + x];
+				compare_index = current_index;
+				index_count++;
+				while (compare_index == buffer[(y * width) + (x + 1)] && x < width - 1 && index_count < index_count_max)
+				{
+					index_count++;
+					x++;
+				}
+				fwrite(&index_count, index_count_bytes, 1, file_ptr);
+				fwrite(&current_index, 1, 1, file_ptr);
+				index_count = 0;
+			}
 		}
-		else
+	}
+
+	else
+	{
+		while (i < filesize)
 		{
-			index_count_max = 256;
-			index_count_bytes = 1;
-		}
-		while (compare_index == buffer[i + 1] && index_count < index_count_max)
-		{
+			current_index = buffer[i];
+			compare_index = current_index;
 			index_count++;
+
+			while (compare_index == buffer[i + 1] && index_count <= index_count_max)
+			{
+				if (compare_index != buffer[i + 1])
+					break;
+				index_count++;
+				i++;
+			}
+
+			fwrite(&index_count, index_count_bytes, 1, file_ptr);
+			fwrite(&current_index, 1, 1, file_ptr);
+			index_count = 0;
 			i++;
 		}
-		fwrite(&index_count, index_count_bytes, 1, file_ptr);
-		fwrite(&current_index, 1, 1, file_ptr);
-		index_count = 0;
-		i++;
 	}
 	fclose(file_ptr);
 }
@@ -262,6 +301,7 @@ void convert_single()
 {
 	char response;
 	char RLE_response;
+	uint8_t RLE_rows;
 
 	// take in the file input name
 	printf("Enter file to convert (without file extension):\n");
@@ -283,14 +323,16 @@ void convert_single()
 		sprintf(outname, "%s.7UP", outputname);
 	
 	// save file to 7UP format
-	printf("N to convert normally, or R to use RLE.\n");
+	printf("N to convert normally, R to use rowed RLE, U to use unrowed RLE.\n");
 	scanf(" %c", &RLE_response);
 	if (RLE_response == 'n' || RLE_response == 'N')
 		save_file(outname, buffer, filesize);
 	else if (RLE_response == 'r' || RLE_response == 'R')
-	{
-		save_file_RLE(outname);
-	}
+		RLE_rows = TRUE;
+	else if (RLE_response == 'u' || RLE_response == 'U')
+		RLE_rows = FALSE;
+
+	save_file_RLE(outname, RLE_rows);
 
 	printf("Writing file: %s\n", outname);
 
@@ -318,6 +360,7 @@ void convert_list()
 	int num_files = 1; // for whatever reason the Win32 version crashes if this is 0 even though all of the code is the same as DOS
     int i = 0;
     int transparency, animation_frames, RLE;
+	int RLE_rows = FALSE;
     char filename[13] = {'\0'};
 
 	fflush(stdin);
@@ -341,12 +384,13 @@ void convert_list()
 
 	do
 	{
-		fscanf(BMP_list_file, "%s %d %d %d", filename, &transparency, &animation_frames, &RLE);
+		fscanf(BMP_list_file, "%s %d %d %d %d", filename, &transparency, &animation_frames, &RLE, &RLE_rows);
 		BMP_files[i].filename = malloc(strlen(filename) + 1);
 		strcpy(BMP_files[i].filename, filename);
 		BMP_files[i].transparency = transparency;
 		BMP_files[i].animation_frames = animation_frames;
 		BMP_files[i].RLE = RLE;
+		BMP_files[i].RLE_rows = RLE_rows;
 		i++;
 		num_files++;
 		BMP_files = realloc(BMP_files, num_files * sizeof(struct BMP_file));
@@ -366,7 +410,7 @@ void convert_list()
 		if (BMP_files[i].RLE == TRUE)
 		{
 			printf("RLE compression enabled.\n");
-			save_file_RLE(conversion_name);
+			save_file_RLE(conversion_name, RLE_rows);
 		}
 		else
 		{
@@ -386,7 +430,7 @@ void menu()
 	char response;
 
 	// ask if user wants to convert a single file or a list of files
-	printf("Do you want to convert a single file 'S' or a list 'L'? Enter 'Q' to quit.\n");
+	printf("Do you want to convert a single file 'S' or a list 'L'?\nEnter 'Q' to quit.\n");
 	scanf(" %c", &response);
 	if (response == 's' || response == 'S')
 		convert_single();

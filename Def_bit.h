@@ -36,8 +36,9 @@
 #define BIT_30 1073741824
 #define BIT_31 2147483648
 
-#define FLAGS_TRANSPARENCY BIT_0
-#define FLAGS_LARGE_RLE BIT_1
+#define FLAGS_TRANSPARENCY  BIT_0
+#define FLAGS_LARGE_RLE     BIT_1
+#define FLAGS_ROWED_RLE     BIT_2
 
 /* should be removed, just use bitwise operations directly */
 #define setBit(bitfield, bit)   (bitfield) |= (bit)
