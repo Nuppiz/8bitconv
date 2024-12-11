@@ -206,8 +206,6 @@ void save_file_RLE(char* outname, uint8_t RLE_rows)
 
 		while (compare_index == buffer[i + 1] && index_count <= index_count_max)
 		{
-			if (compare_index != buffer[i + 1])
-				break;
 			index_count++;
 			i++;
 		}
@@ -282,8 +280,6 @@ void save_file_RLE(char* outname, uint8_t RLE_rows)
 
 			while (compare_index == buffer[i + 1] && index_count <= index_count_max)
 			{
-				if (compare_index != buffer[i + 1])
-					break;
 				index_count++;
 				i++;
 			}
